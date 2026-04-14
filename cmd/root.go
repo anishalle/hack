@@ -1,49 +1,38 @@
-/*
-Copyright © 2026 NAME HERE <EMAIL ADDRESS>
-*/
 package cmd
 
 import (
+	"fmt"
 	"os"
-	// "charm.land/bubbles/v2/spinner"
-	// tea "charm.land/bubbletea/v2"
-	// "charm.land/lipgloss/v2"
+
 	"github.com/spf13/cobra"
 )
 
-// rootCmd represents the base command when called without any subcommands
-var rootCmd = &cobra.Command{
-	Use:   "hack",
-	Short: "Easy environment and prod management",
-	Long:  `hack, the tool for easy environment management across teams and a compilation of cli tools.`,
-	// Uncomment the following line if your bare application
-	// has an action associated with it:
-	// Run: func(cmd *cobra.Command, args []string) {
-	// 	p := tea.NewProgram(initRootModel())
-	// 	if _, err := p.Run(); err != nil {
-	// 		fmt.Println("Something's gone very wrong, ask Anish!", err)
-	// 		os.Exit(1)
-	// 	}
-	// },
-}
-
-// Execute adds all child commands to the root command and sets flags appropriately.
-// This is called by main.main(). It only needs to happen once to the rootCmd.
+// Execute builds the command tree and runs the CLI.
 func Execute() {
-	err := rootCmd.Execute()
-	if err != nil {
+	deps := defaultDependencies()
+	rootCmd := newRootCmd(deps)
+
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintln(deps.stderr, err)
 		os.Exit(1)
 	}
 }
 
-func init() {
-	// Here you will define your flags and configuration settings.
-	// Cobra supports persistent flags, which, if defined here,
-	// will be global for your application.
+func newRootCmd(deps *dependencies) *cobra.Command {
+	rootCmd := &cobra.Command{
+		Use:           "hack",
+		Short:         "Manage HackUTD environments and deployments",
+		Long:          "hack wraps Google Cloud tooling into a cleaner CLI for HackUTD environment management.",
+		SilenceErrors: true,
+		SilenceUsage:  true,
+	}
 
-	// rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.hack.yaml)")
+	rootCmd.SetIn(deps.stdin)
+	rootCmd.SetOut(deps.stdout)
+	rootCmd.SetErr(deps.stderr)
 
-	// Cobra also supports local flags, which will only run
-	// when this action is called directly.
-	rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	rootCmd.AddCommand(newAuthCmd(deps))
+	rootCmd.AddCommand(newEnvCmd(deps))
+
+	return rootCmd
 }
