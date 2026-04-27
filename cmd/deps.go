@@ -5,13 +5,16 @@ import (
 	"io"
 	"os"
 
+	"github.com/anishalle/hack/internal/cloud"
 	"github.com/anishalle/hack/internal/config"
 	"github.com/anishalle/hack/internal/envmanager"
 	"github.com/anishalle/hack/internal/gcloud"
 )
 
 type authService interface {
+	ListProjects(ctx context.Context) ([]cloud.Project, error)
 	Login(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) (envmanager.AuthStatus, error)
+	Logout(ctx context.Context) (envmanager.AuthStatus, error)
 	Status(ctx context.Context) (envmanager.AuthStatus, error)
 	UseProject(ctx context.Context, project string) (envmanager.AuthStatus, error)
 }
@@ -19,6 +22,7 @@ type authService interface {
 type envService interface {
 	ListEnvironments(ctx context.Context, app string) ([]string, error)
 	GetEnvironment(ctx context.Context, app, environment string) (envmanager.Environment, error)
+	MergeValues(ctx context.Context, app, environment string, values map[string]string) (envmanager.Environment, error)
 	SetValue(ctx context.Context, app, environment, key, value string) (envmanager.Environment, error)
 }
 
@@ -30,6 +34,7 @@ type dependencies struct {
 	stderr      io.Writer
 	workingDir  func() (string, error)
 	interactive bool
+	pickProject func(context.Context, []cloud.Project, *dependencies) (cloud.Project, error)
 }
 
 func defaultDependencies() *dependencies {
@@ -45,6 +50,7 @@ func defaultDependencies() *dependencies {
 		stderr:      os.Stderr,
 		workingDir:  os.Getwd,
 		interactive: isInteractive(os.Stdin),
+		pickProject: runProjectPicker,
 	}
 }
 

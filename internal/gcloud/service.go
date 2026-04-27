@@ -3,11 +3,14 @@ package gcloud
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os/exec"
 	"strings"
+
+	"github.com/anishalle/hack/internal/cloud"
 )
 
 var ErrNotInstalled = errors.New("gcloud is not installed or not on PATH")
@@ -131,6 +134,14 @@ func (s *Service) Login(ctx context.Context, stdin io.Reader, stdout, stderr io.
 	})
 }
 
+func (s *Service) Revoke(ctx context.Context, account string) error {
+	args := []string{"auth", "revoke", "--quiet"}
+	if strings.TrimSpace(account) != "" {
+		args = append(args, account)
+	}
+	return s.runner.Run(ctx, Request{Args: args})
+}
+
 func (s *Service) ActiveAccount(ctx context.Context) (string, error) {
 	output, err := s.runner.Output(ctx, "auth", "list", "--filter=status:ACTIVE", "--format=value(account)")
 	if err != nil {
@@ -158,6 +169,34 @@ func (s *Service) SetProject(ctx context.Context, project string) error {
 	return s.runner.Run(ctx, Request{
 		Args: []string{"config", "set", "project", project},
 	})
+}
+
+func (s *Service) ListProjects(ctx context.Context) ([]cloud.Project, error) {
+	output, err := s.runner.Output(ctx, "projects", "list", "--format=json(projectId,name)")
+	if err != nil {
+		return nil, err
+	}
+
+	var rawProjects []struct {
+		ID   string `json:"projectId"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(output, &rawProjects); err != nil {
+		return nil, fmt.Errorf("parse gcloud projects list: %w", err)
+	}
+
+	projects := make([]cloud.Project, 0, len(rawProjects))
+	for _, rawProject := range rawProjects {
+		id := strings.TrimSpace(rawProject.ID)
+		if id == "" {
+			continue
+		}
+		projects = append(projects, cloud.Project{
+			ID:   id,
+			Name: strings.TrimSpace(rawProject.Name),
+		})
+	}
+	return projects, nil
 }
 
 func (s *Service) ListSecrets(ctx context.Context, project string) ([]string, error) {

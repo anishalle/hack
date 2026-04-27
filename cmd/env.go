@@ -21,58 +21,92 @@ func newEnvCmd(deps *dependencies) *cobra.Command {
 	}
 
 	envCmd.AddCommand(&cobra.Command{
-		Use:     "list <app>",
+		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "List environments available for an app",
-		Args:    cobra.ExactArgs(1),
+		Short:   "List environment versions",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 0 {
+				return newUsageError(
+					"`hack env list` does not take arguments",
+					"Environment versions are discovered from Secret Manager names in the active project.",
+					"hack env list",
+					"hack list",
+				)
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			environments, err := deps.env.ListEnvironments(context.Background(), args[0])
+			return printEnvironmentList(context.Background(), deps)
+		},
+	})
+
+	envCmd.AddCommand(&cobra.Command{
+		Use:   "show <environment> [key]",
+		Short: "Print an environment or one key",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return newUsageError(
+					"Environment/version required",
+					"`hack env show` needs the environment/version name to fetch, such as prod, test, or dev.",
+					"hack env show prod",
+					"hack env show prod OPENAI_API_KEY",
+				)
+			}
+			if len(args) > 2 {
+				return newUsageError(
+					"Too many arguments",
+					"`hack env show` accepts an environment/version and optionally one key.",
+					"hack env show prod",
+					"hack env show prod DATABASE_URL",
+				)
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			environment, err := deps.env.GetEnvironment(context.Background(), hiddenApp, args[0])
 			if err != nil {
 				return err
 			}
 
-			if len(environments) == 0 {
-				fmt.Fprintln(deps.stdout, "No environments found.")
+			if len(args) == 2 {
+				value, ok := environment.Values[args[1]]
+				if !ok {
+					return newUsageError(
+						"Key not found",
+						fmt.Sprintf("%s does not exist in %s.", args[1], args[0]),
+						"hack env show "+args[0],
+						"hack env set "+args[0]+" "+args[1]+" value",
+					)
+				}
+				fmt.Fprintln(deps.stdout, value)
 				return nil
 			}
 
-			for _, environment := range environments {
-				fmt.Fprintln(deps.stdout, environment)
-			}
-			return nil
-		},
-	})
-
-	envCmd.AddCommand(&cobra.Command{
-		Use:   "show <app> <environment>",
-		Short: "Show the keys stored in an environment",
-		Args:  cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			environment, err := deps.env.GetEnvironment(context.Background(), args[0], args[1])
+			rendered, err := envmanager.RenderDotenv(environment.Values)
 			if err != nil {
 				return err
 			}
-
-			keys := environment.Keys()
-			fmt.Fprintf(deps.stdout, "app: %s\n", environment.App)
-			fmt.Fprintf(deps.stdout, "environment: %s\n", environment.Name)
-			fmt.Fprintf(deps.stdout, "project: %s\n", environment.Project)
-			fmt.Fprintf(deps.stdout, "secret: %s\n", environment.SecretID)
-			fmt.Fprintf(deps.stdout, "keys: %d\n", len(keys))
-			for _, key := range keys {
-				fmt.Fprintf(deps.stdout, "  %s\n", key)
-			}
-
-			return nil
+			_, err = io.WriteString(deps.stdout, rendered)
+			return err
 		},
 	})
 
 	envCmd.AddCommand(&cobra.Command{
-		Use:   "export <app> <environment>",
-		Short: "Write an environment into .env in the current directory",
-		Args:  cobra.ExactArgs(2),
+		Use:   "import <environment>",
+		Short: "Pull an environment into .env",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return newUsageError(
+					"Environment/version required",
+					"`hack env import` pulls one remote environment/version into a local .env file.",
+					"hack env import prod",
+					"hack env import test",
+				)
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			environment, err := deps.env.GetEnvironment(context.Background(), args[0], args[1])
+			environment, err := deps.env.GetEnvironment(context.Background(), hiddenApp, args[0])
 			if err != nil {
 				return err
 			}
@@ -96,18 +130,80 @@ func newEnvCmd(deps *dependencies) *cobra.Command {
 				return err
 			}
 
-			fmt.Fprintf(deps.stdout, "Wrote %d values to %s.\n", len(environment.Values), target)
+			fmt.Fprintln(deps.stdout, renderSuccess("Imported %d values from %s into %s.", len(environment.Values), environment.Name, target))
 			return nil
 		},
 	})
 
 	envCmd.AddCommand(&cobra.Command{
-		Use:   "load <app> <environment>",
-		Short: "Print shell exports for eval",
-		Long:  "Print shell exports for eval. Example: eval \"$(hack env load api prod)\"",
-		Args:  cobra.ExactArgs(2),
+		Use:   "export <file> <environment>",
+		Short: "Push an env file into an environment",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 2 {
+				return newUsageError(
+					"File and environment/version required",
+					"`hack env export` reads a local env file and pushes those keys into one remote environment/version.",
+					"hack env export .env prod",
+					"hack env export .env.local test",
+				)
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			environment, err := deps.env.GetEnvironment(context.Background(), args[0], args[1])
+			target := args[0]
+			if !filepath.IsAbs(target) {
+				cwd, err := deps.workingDir()
+				if err != nil {
+					return err
+				}
+				target = filepath.Join(cwd, target)
+			}
+
+			data, err := os.ReadFile(target)
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return newUsageError(
+						"Env file not found",
+						"`hack env export` pushes keys from a local env file. Create the file first or import an existing environment.",
+						"hack env import prod",
+						"hack env export .env prod",
+					)
+				}
+				return err
+			}
+
+			values, err := envmanager.ParseDotenv(data)
+			if err != nil {
+				return err
+			}
+
+			environment, err := deps.env.MergeValues(context.Background(), hiddenApp, args[1], values)
+			if err != nil {
+				return err
+			}
+
+			fmt.Fprintln(deps.stdout, renderSuccess("Exported %d values from %s into %s.", len(values), target, environment.Name))
+			return nil
+		},
+	})
+
+	envCmd.AddCommand(&cobra.Command{
+		Use:   "load <environment>",
+		Short: "Print shell exports for eval",
+		Long:  "Print shell exports for eval. Example: eval \"$(hack env load prod)\"",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return newUsageError(
+					"Environment/version required",
+					"`hack env load` prints shell export commands for one environment/version.",
+					"eval \"$(hack env load prod)\"",
+					"hack env load test",
+				)
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			environment, err := deps.env.GetEnvironment(context.Background(), hiddenApp, args[0])
 			if err != nil {
 				return err
 			}
@@ -123,32 +219,54 @@ func newEnvCmd(deps *dependencies) *cobra.Command {
 	})
 
 	envCmd.AddCommand(&cobra.Command{
-		Use:   "set <app> <environment> <key> [value]",
+		Use:   "set <environment> <key> [value]",
 		Short: "Set one key in an environment secret",
 		Long:  "Set one key in an environment secret. If value is omitted, Hack reads it from stdin or prompts for it interactively.",
 		Args: func(cmd *cobra.Command, args []string) error {
-			if len(args) < 3 {
-				return errors.New("expected at least <app> <environment> <key>")
+			if len(args) < 2 {
+				return newUsageError(
+					"Environment and key required",
+					"`hack env set` needs an environment/version name and an env var key. Value can be passed as an argument, piped through stdin, or typed interactively.",
+					"hack env set prod OPENAI_API_KEY sk-...",
+					"printf %s \"$DATABASE_URL\" | hack env set prod DATABASE_URL",
+				)
 			}
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			value, err := readSecretValue(args[3:], deps)
+			value, err := readSecretValue(args[2:], deps)
 			if err != nil {
 				return err
 			}
 
-			environment, err := deps.env.SetValue(context.Background(), args[0], args[1], args[2], value)
+			environment, err := deps.env.SetValue(context.Background(), hiddenApp, args[0], args[1], value)
 			if err != nil {
 				return err
 			}
 
-			fmt.Fprintf(deps.stdout, "Updated %s in %s/%s (%d total keys).\n", args[2], environment.App, environment.Name, len(environment.Values))
+			fmt.Fprintln(deps.stdout, renderSuccess("Updated %s in %s (%d total keys).", args[1], environment.Name, len(environment.Values)))
 			return nil
 		},
 	})
 
 	return envCmd
+}
+
+func printEnvironmentList(ctx context.Context, deps *dependencies) error {
+	environments, err := deps.env.ListEnvironments(ctx, hiddenApp)
+	if err != nil {
+		return err
+	}
+
+	if len(environments) == 0 {
+		fmt.Fprintln(deps.stdout, mutedStyle.Render("No environments found."))
+		return nil
+	}
+
+	for _, environment := range environments {
+		fmt.Fprintln(deps.stdout, environment)
+	}
+	return nil
 }
 
 func confirmOverwrite(target string, deps *dependencies) error {

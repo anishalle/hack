@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/anishalle/hack/internal/cloud"
 	"github.com/anishalle/hack/internal/config"
 )
 
@@ -23,9 +24,11 @@ var (
 type SecretClient interface {
 	CheckInstalled(ctx context.Context) error
 	Login(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) error
+	Revoke(ctx context.Context, account string) error
 	ActiveAccount(ctx context.Context) (string, error)
 	CurrentProject(ctx context.Context) (string, error)
 	SetProject(ctx context.Context, project string) error
+	ListProjects(ctx context.Context) ([]cloud.Project, error)
 	ListSecrets(ctx context.Context, project string) ([]string, error)
 	SecretExists(ctx context.Context, project, secretID string) (bool, error)
 	CreateSecret(ctx context.Context, project, secretID string) error
@@ -105,6 +108,33 @@ func (s *Service) Login(ctx context.Context, stdin io.Reader, stdout, stderr io.
 	return s.Status(ctx)
 }
 
+func (s *Service) Logout(ctx context.Context) (AuthStatus, error) {
+	cfg, err := s.store.Load()
+	if err != nil {
+		return AuthStatus{}, err
+	}
+
+	if err := s.client.CheckInstalled(ctx); err == nil {
+		account, err := s.client.ActiveAccount(ctx)
+		if err != nil {
+			return AuthStatus{}, err
+		}
+		if account != "" {
+			if err := s.client.Revoke(ctx, account); err != nil {
+				return AuthStatus{}, err
+			}
+		}
+	}
+
+	cfg.ActiveAccount = ""
+	cfg.ActiveProject = ""
+	if err := s.store.Save(cfg); err != nil {
+		return AuthStatus{}, err
+	}
+
+	return s.Status(ctx)
+}
+
 func (s *Service) Status(ctx context.Context) (AuthStatus, error) {
 	cfg, err := s.store.Load()
 	if err != nil {
@@ -146,10 +176,6 @@ func (s *Service) UseProject(ctx context.Context, project string) (AuthStatus, e
 		return AuthStatus{}, err
 	}
 
-	if err := s.client.SetProject(ctx, project); err != nil {
-		return AuthStatus{}, err
-	}
-
 	cfg, err := s.store.Load()
 	if err != nil {
 		return AuthStatus{}, err
@@ -166,6 +192,13 @@ func (s *Service) UseProject(ctx context.Context, project string) (AuthStatus, e
 	}
 
 	return s.Status(ctx)
+}
+
+func (s *Service) ListProjects(ctx context.Context) ([]cloud.Project, error) {
+	if err := s.client.CheckInstalled(ctx); err != nil {
+		return nil, err
+	}
+	return s.client.ListProjects(ctx)
 }
 
 func (s *Service) ListEnvironments(ctx context.Context, app string) ([]string, error) {
@@ -213,13 +246,23 @@ func (s *Service) GetEnvironment(ctx context.Context, app, environment string) (
 }
 
 func (s *Service) SetValue(ctx context.Context, app, environment, key, value string) (Environment, error) {
+	if err := ValidateKey(key); err != nil {
+		return Environment{}, err
+	}
+
+	return s.MergeValues(ctx, app, environment, map[string]string{key: value})
+}
+
+func (s *Service) MergeValues(ctx context.Context, app, environment string, nextValues map[string]string) (Environment, error) {
 	app, environment, project, secretID, err := s.resolveEnvironment(ctx, app, environment)
 	if err != nil {
 		return Environment{}, err
 	}
 
-	if err := ValidateKey(key); err != nil {
-		return Environment{}, err
+	for key := range nextValues {
+		if err := ValidateKey(key); err != nil {
+			return Environment{}, err
+		}
 	}
 
 	exists, err := s.client.SecretExists(ctx, project, secretID)
@@ -244,7 +287,9 @@ func (s *Service) SetValue(ctx context.Context, app, environment, key, value str
 		}
 	}
 
-	values[key] = value
+	for key, value := range nextValues {
+		values[key] = value
+	}
 
 	payload, err := MarshalPayload(values)
 	if err != nil {

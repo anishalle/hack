@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/anishalle/hack/internal/cloud"
 	"github.com/anishalle/hack/internal/config"
 	"github.com/anishalle/hack/internal/gcloud"
 )
@@ -115,6 +116,10 @@ func (f *fakeSecretClient) Login(ctx context.Context, stdin io.Reader, stdout, s
 	return nil
 }
 
+func (f *fakeSecretClient) Revoke(ctx context.Context, account string) error {
+	return nil
+}
+
 func (f *fakeSecretClient) ActiveAccount(ctx context.Context) (string, error) {
 	return f.account, nil
 }
@@ -126,6 +131,10 @@ func (f *fakeSecretClient) CurrentProject(ctx context.Context) (string, error) {
 func (f *fakeSecretClient) SetProject(ctx context.Context, project string) error {
 	f.project = project
 	return nil
+}
+
+func (f *fakeSecretClient) ListProjects(ctx context.Context) ([]cloud.Project, error) {
+	return []cloud.Project{{ID: "hack-project", Name: "Hack Project"}}, nil
 }
 
 func (f *fakeSecretClient) ListSecrets(ctx context.Context, project string) ([]string, error) {

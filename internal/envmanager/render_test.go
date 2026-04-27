@@ -18,6 +18,28 @@ func TestRenderDotenvEscapesSpecialCharacters(t *testing.T) {
 	}
 }
 
+func TestParseDotenvSupportsQuotedAndExportedValues(t *testing.T) {
+	t.Parallel()
+
+	values, err := ParseDotenv([]byte("export API_KEY=\"line\\nvalue\"\nDATABASE_URL='postgres://localhost/db'\nDEBUG=true # local\nMULTILINE=\"first\nsecond\"\n"))
+	if err != nil {
+		t.Fatalf("parse dotenv: %v", err)
+	}
+
+	if values["API_KEY"] != "line\nvalue" {
+		t.Fatalf("unexpected API_KEY: %q", values["API_KEY"])
+	}
+	if values["DATABASE_URL"] != "postgres://localhost/db" {
+		t.Fatalf("unexpected DATABASE_URL: %q", values["DATABASE_URL"])
+	}
+	if values["DEBUG"] != "true" {
+		t.Fatalf("unexpected DEBUG: %q", values["DEBUG"])
+	}
+	if values["MULTILINE"] != "first\nsecond" {
+		t.Fatalf("unexpected MULTILINE: %q", values["MULTILINE"])
+	}
+}
+
 func TestRenderExportsEscapesSingleQuotes(t *testing.T) {
 	t.Parallel()
 
